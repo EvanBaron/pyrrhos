@@ -1,0 +1,8 @@
+services:
+  pyrrhos:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - ./data:/app/data
