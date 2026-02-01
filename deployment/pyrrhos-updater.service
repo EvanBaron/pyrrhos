@@ -1,0 +1,13 @@
+[Unit]
+Description=Pyrrhos Discord Bot Auto-Updater
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/pyrrhos-bot/deployment
+EnvironmentFile=/root/pyrrhos-bot/deployment/.env
+ExecStart=/usr/bin/python3 webhook_listener.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
