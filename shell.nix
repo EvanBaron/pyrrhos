@@ -2,17 +2,20 @@
   pkgs ? import <nixpkgs> { },
 }:
 let
-  yt-dlp-latest = pkgs.python3Packages.yt-dlp.overridePythonAttrs (old: rec {
+  yt-dlp-latest = pkgs.python3Packages.buildPythonPackage rec {
+    pname = "yt-dlp";
     version = "2026.01.29";
+    format = "pyproject";
+
     src = pkgs.fetchFromGitHub {
       owner = "yt-dlp";
       repo = "yt-dlp";
       rev = version;
       hash = "sha256-nw/L71aoAJSCbW1y8ir8obrFPSbVlBA0UtlrxL6YtCQ=";
     };
-    patches = [ ];
-    postPatch = "";
-  });
+
+    nativeBuildInputs = [ pkgs.python3Packages.hatchling ];
+  };
 
   python-env = pkgs.python3.withPackages (
     ps: with ps; [
