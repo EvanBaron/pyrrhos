@@ -28,6 +28,8 @@ FFMPEG_OPTIONS = {
 }
 
 # yt-dlp Configuration
+COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
+
 YTDL_FORMAT_OPTIONS = {
     "format": "bestaudio/best",
     "extractaudio": True,
@@ -47,7 +49,7 @@ YTDL_FORMAT_OPTIONS = {
     "keepvideo": False,
     "extract_flat": False,
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "cookiefile": None,
+    "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
     "age_limit": None,
     "http_chunk_size": 10485760,
 }
