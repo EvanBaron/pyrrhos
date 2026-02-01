@@ -2,39 +2,6 @@
   pkgs ? import <nixpkgs> { },
 }:
 let
-  yt-dlp-latest = pkgs.python3Packages.buildPythonPackage rec {
-    pname = "yt-dlp";
-    version = "2026.01.29";
-    format = "pyproject";
-
-    src = pkgs.fetchFromGitHub {
-      owner = "yt-dlp";
-      repo = "yt-dlp";
-      rev = version;
-      hash = "sha256-nw/L71aoAJSCbW1y8ir8obrFPSbVlBA0UtlrxL6YtCQ=";
-    };
-
-    nativeBuildInputs = [ pkgs.python3Packages.hatchling ];
-  };
-
-  bgutil-ytdlp-pot-provider = pkgs.python3Packages.buildPythonPackage rec {
-    pname = "bgutil-ytdlp-pot-provider";
-    version = "1.2.2";
-    format = "pyproject";
-
-    src = pkgs.fetchFromGitHub {
-      owner = "Brainicism";
-      repo = "bgutil-ytdlp-pot-provider";
-      rev = "v${version}";
-      hash = "sha256-KKImGxFGjClM2wAk/L8nwauOkM/gEwRVMZhTP62ETqY=";
-    };
-
-    sourceRoot = "source/plugin";
-
-    nativeBuildInputs = [ pkgs.python3Packages.hatchling ];
-    propagatedBuildInputs = [ pkgs.python3Packages.requests ];
-  };
-
   python-env = pkgs.python3.withPackages (
     ps: with ps; [
       discordpy
@@ -42,11 +9,6 @@ let
       pynacl
       psutil
       pip
-      setuptools
-      wheel
-      requests
-      yt-dlp-latest
-      bgutil-ytdlp-pot-provider
     ]
   );
 in
@@ -58,11 +20,17 @@ pkgs.mkShell {
 
   shellHook = ''
     export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.ffmpeg ]}:$LD_LIBRARY_PATH
-    export ENVIRONMENT=dev
 
-    ln -sfn ${python-env} .venv
+    export PIP_PREFIX="$PWD/.pip_packages"
+    export PYTHONPATH="$PIP_PREFIX/${python-env.sitePackages}:$PYTHONPATH"
+    export PATH="$PIP_PREFIX/bin:$PATH"
+    export PIP_CONFIG_FILE=/dev/null
+
+    mkdir -p "$PIP_PREFIX"
+    pip install --upgrade --prefix="$PIP_PREFIX" -r requirements.txt --quiet
 
     echo "Environment ready!"
-    echo "yt-dlp version: $(yt-dlp --version)"
+    echo -n "yt-dlp version: "
+    "$PIP_PREFIX/bin/yt-dlp" --version
   '';
 }

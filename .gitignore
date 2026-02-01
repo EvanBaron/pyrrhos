@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .direnv/
+.pip_packages/
 .env
 .env.*
 .venv
