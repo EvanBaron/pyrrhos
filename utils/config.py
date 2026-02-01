@@ -21,6 +21,9 @@ if test_guild_id:
     except ValueError:
         test_guild_id = None
 
+POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://pot-provider:4416")
+COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
+
 # FFmpeg Configuration
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -28,8 +31,6 @@ FFMPEG_OPTIONS = {
 }
 
 # yt-dlp Configuration
-COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
-
 YTDL_FORMAT_OPTIONS = {
     "format": "bestaudio/best",
     "extractaudio": True,
@@ -52,7 +53,7 @@ YTDL_FORMAT_OPTIONS = {
     "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
     "age_limit": None,
     "http_chunk_size": 10485760,
-    "extractor_args": {"youtubepot-bgutilhttp": {"base_url": "http://pot-provider:4416"}},
+    "extractor_args": {"youtubepot-bgutilhttp": {"base_url": POT_PROVIDER_URL}},
 }
 
 # Additional headers to avoid blocks

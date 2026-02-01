@@ -5,6 +5,10 @@ import yt_dlp
 from data.track import Track
 from data.exceptions import AudioError, DownloadError
 from utils.config import YTDL_FORMAT_OPTIONS, YTDL_HEADERS, FFMPEG_OPTIONS
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class YTDLSource:
@@ -30,6 +34,10 @@ class YTDLSource:
             DownloadError: If extraction fails
         """
         loop = asyncio.get_event_loop()
+
+        logger.info(
+            f"yt-dlp extractor_args: {cls.ytdl.params.get('extractor_args', {})}"
+        )
 
         try:
             # Run in executor to avoid blocking
