@@ -6,3 +6,11 @@ services:
       - .env.production
     volumes:
       - ./data:/app/data
+    depends_on:
+      - pot-provider
+
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    restart: unless-stopped
+    ports:
+      - "4416:4416"

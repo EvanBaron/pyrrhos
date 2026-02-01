@@ -52,6 +52,7 @@ YTDL_FORMAT_OPTIONS = {
     "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
     "age_limit": None,
     "http_chunk_size": 10485760,
+    "extractor_args": {"youtubepot-bgutilhttp": {"base_url": "http://pot-provider:4416"}},
 }
 
 # Additional headers to avoid blocks
