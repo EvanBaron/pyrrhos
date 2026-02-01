@@ -87,7 +87,7 @@ class YTDLSource:
             title=data.get("title", "Unknown Title"),
             url=data["url"],
             webpage_url=data.get("webpage_url", url),
-            duration=data.get("duration", 0),
+            duration=int(data.get("duration", 0)),
             thumbnail=data.get("thumbnail"),
             uploader=data.get("uploader", "Unknown"),
             requester=requester,
