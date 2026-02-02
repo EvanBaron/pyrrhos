@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
@@ -22,7 +23,7 @@ if test_guild_id:
         test_guild_id = None
 
 POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://pot-provider:4416")
-COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
+COOKIES_PATH = os.getenv("COOKIES_PATH", "./cookies.txt")
 
 # FFmpeg Configuration
 FFMPEG_OPTIONS = {
@@ -50,11 +51,16 @@ YTDL_FORMAT_OPTIONS = {
     "keepvideo": False,
     "extract_flat": False,
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
     "age_limit": None,
     "http_chunk_size": 10485760,
     "extractor_args": {"youtubepot-bgutilhttp": {"base_url": POT_PROVIDER_URL}},
 }
+
+if Path(COOKIES_PATH).exists():
+    YTDL_FORMAT_OPTIONS["cookiefile"] = COOKIES_PATH
+    print(f"Using cookies from: {COOKIES_PATH}")
+else:
+    print(f"Cookies file not found at: {COOKIES_PATH}")
 
 # Additional headers to avoid blocks
 YTDL_HEADERS = {
