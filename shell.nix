@@ -8,9 +8,10 @@ let
       python-dotenv
       pynacl
       psutil
+      pip
       yt-dlp
       bgutil-ytdlp-pot-provider
-      pip
+      yt-dlp-ejs
     ]
   );
 in
@@ -29,7 +30,8 @@ pkgs.mkShell {
     export PIP_CONFIG_FILE=/dev/null
 
     mkdir -p "$PIP_PREFIX"
-    pip install --upgrade --prefix="$PIP_PREFIX" yt-dlp bgutil-ytdlp-pot-provider --quiet
+    pip install --force-reinstall --ignore-installed "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
+    pip install --upgrade --ignore-installed --prefix="$PIP_PREFIX" bgutil-ytdlp-pot-provider --quiet
     pip install --prefix="$PIP_PREFIX" -r requirements.txt --quiet
 
     echo "Environment ready!"

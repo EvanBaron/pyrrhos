@@ -54,6 +54,7 @@ YTDL_FORMAT_OPTIONS = {
     "age_limit": None,
     "http_chunk_size": 10485760,
     "extractor_args": {"youtubepot-bgutilhttp": {"base_url": POT_PROVIDER_URL}},
+    "js-runtimes": "node",
 }
 
 if Path(COOKIES_PATH).exists():

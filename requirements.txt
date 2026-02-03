@@ -1,5 +1,5 @@
 discord.py[voice]>=2.3.0
-yt-dlp>=2025.05.22
+yt-dlp[default]>=2026.01.31
 bgutil-ytdlp-pot-provider>=1.2.2
 python-dotenv>=1.0.0
 psutil>=5.9.0
