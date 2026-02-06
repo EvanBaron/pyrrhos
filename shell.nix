@@ -1,43 +1,42 @@
 {
   pkgs ? import <nixpkgs> { },
 }:
-let
-  python-env = pkgs.python3.withPackages (
-    ps: with ps; [
-      discordpy
-      python-dotenv
-      pynacl
-      psutil
-      pip
-      yt-dlp
-      bgutil-ytdlp-pot-provider
-      yt-dlp-ejs
-    ]
-  );
-in
+
 pkgs.mkShell {
   buildInputs = [
-    python-env
+    (pkgs.python3.withPackages (ps: [ ps.pip ]))
     pkgs.ffmpeg
   ];
 
   shellHook = ''
-    export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.ffmpeg ]}:$LD_LIBRARY_PATH
+    if [ -L .venv ]; then rm .venv; fi
 
-    export PIP_PREFIX="$PWD/.pip_packages"
-    export PYTHONPATH="$PIP_PREFIX/${python-env.sitePackages}:$PYTHONPATH"
-    export PATH="$PIP_PREFIX/bin:$PATH"
-    export PIP_CONFIG_FILE=/dev/null
+    if [ ! -d .venv ]; then
+      echo "Creating virtual environment..."
+      python -m venv .venv
+    fi
 
-    mkdir -p "$PIP_PREFIX"
-    pip install --upgrade --prefix="$PIP_PREFIX" "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz" --quiet
-    pip install --upgrade --prefix="$PIP_PREFIX" bgutil-ytdlp-pot-provider --quiet
-    pip install --prefix="$PIP_PREFIX" -r requirements.txt --quiet
+    source .venv/bin/activate
+
+    export LD_LIBRARY_PATH=${
+      pkgs.lib.makeLibraryPath [
+        pkgs.ffmpeg
+        pkgs.libsodium
+      ]
+    }:$LD_LIBRARY_PATH
+    export PIP_USER=0
+
+    pip install --upgrade pip --quiet
+
+    pip install --upgrade --force-reinstall "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz" --quiet
+    pip install --upgrade bgutil-ytdlp-pot-provider --quiet
+
+    if [ -f requirements.txt ]; then
+        pip install -r requirements.txt --quiet
+    fi
 
     echo "Environment ready!"
     echo -n "yt-dlp version: "
     yt-dlp --version
-
-    ln -sfn ${python-env} .venv
   '';
 }
