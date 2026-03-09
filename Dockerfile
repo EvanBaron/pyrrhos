@@ -11,6 +11,9 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+ARG CACHEBUST=1
+RUN pip install --no-cache-dir -U "yt-dlp[default]"
+
 COPY . .
 
 ENV ENVIRONMENT=prod
