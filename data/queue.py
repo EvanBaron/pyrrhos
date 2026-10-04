@@ -109,9 +109,6 @@ class MusicQueue:
         track = self._queue.popleft()
         self._history.append(track)
 
-        if self._loop_queue:
-            self._queue.append(track)
-
         return track
 
     def peek(self) -> Track | None:

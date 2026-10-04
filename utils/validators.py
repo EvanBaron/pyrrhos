@@ -10,7 +10,7 @@ class Validators:
         r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
     )
     SPOTIFY_REGEX: re.Pattern[str] = re.compile(
-        r"(https?://)?(open\.)?spotify\.com/(track|playlist|album)/.+"
+        r"(https?://)?((open\.)?spotify\.com/(intl-[\w-]+/)?(track|playlist|album)/|spotify\.link/|spotify\.app\.link/).+"
     )
     SOUNDCLOUD_REGEX: re.Pattern[str] = re.compile(
         r"(https?://)?(www\.)?soundcloud\.com/.+"
@@ -20,12 +20,12 @@ class Validators:
     def is_url(text: str) -> bool:
         """Check if text is a URL."""
         url_pattern = re.compile(
-            r"^https?://" +
-            r"(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|" +
-            r"localhost|" +
-            r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})" +
-            r"(?::\d+)?" +
-            r"(?:/?|[/?]\S+)$",
+            r"^https?://"
+            + r"(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|"
+            + r"localhost|"
+            + r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+            + r"(?::\d+)?"
+            + r"(?:/?|[/?]\S+)$",
             re.IGNORECASE,
         )
 
@@ -58,10 +58,10 @@ class Validators:
             duration: Duration in seconds
 
         Returns:
-            True if duration is valid
+            True if duration is valid (0 means unknown)
         """
 
-        return 0 < duration <= MAX_TRACK_DURATION
+        return 0 <= duration <= MAX_TRACK_DURATION
 
     @staticmethod
     def validate_queue_size(queue_size: int) -> bool:

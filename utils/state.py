@@ -4,7 +4,7 @@ from data.constants import VOICE_TIMEOUT
 from data.track import Track
 from data.queue import MusicQueue
 from data.exceptions import VoiceError
-from utils.audio import AudioPlayer
+from utils.audio import AudioPlayer, YTDLSource
 
 
 class GuildState:
@@ -19,8 +19,10 @@ class GuildState:
         self.text_channel: discord.TextChannel | None = None
 
         # Playback control
-        self._is_playing: bool = False
         self._skip_votes: set[int] = set()
+        self._skip_requested: bool = False
+        self._playback_id: int = 0
+        self._play_lock: asyncio.Lock = asyncio.Lock()
 
         # Auto-disconnect timer
         self._disconnect_timer: asyncio.Task[None] | None = None
@@ -44,6 +46,12 @@ class GuildState:
 
         return self.player is not None and self.player.is_paused()
 
+    @property
+    def is_active(self) -> bool:
+        """Check if a track is current (playing, paused or loading)."""
+
+        return self.current_track is not None
+
     async def connect(self, channel: discord.VoiceChannel) -> discord.VoiceClient:
         """
         Connect to a voice channel.
@@ -58,84 +66,151 @@ class GuildState:
             VoiceError: If connection fails
         """
 
-        if self.is_connected and self.voice_client:
-            if self.voice_client.channel.id == channel.id:
-                return self.voice_client
-            await self.voice_client.move_to(channel)
-        else:
-            try:
-                self.voice_client = await channel.connect()
-                self.player = AudioPlayer(self.voice_client)
-            except asyncio.TimeoutError as exc:
-                raise VoiceError(f"Could not connect to {channel.name}") from exc
-            except discord.ClientException as exception:
-                raise VoiceError(f"Failed to connect: {str(exception)}") from exception
+        self._cancel_disconnect_timer()
 
-        # Cancel disconnect timer if exists
-        if self._disconnect_timer and not self._disconnect_timer.done():
-            self._disconnect_timer.cancel()
+        if self.is_connected and self.voice_client:
+            if self.voice_client.channel.id != channel.id:
+                await self.voice_client.move_to(channel)
+            return self.voice_client
+
+        stale_client = self.guild.voice_client
+        if stale_client:
+            await stale_client.disconnect(force=True)
+
+        try:
+            self.voice_client = await channel.connect()
+            self.player = AudioPlayer(self.voice_client)
+        except asyncio.TimeoutError as exc:
+            raise VoiceError(f"Could not connect to {channel.name}") from exc
+        except discord.ClientException as exception:
+            raise VoiceError(f"Failed to connect: {str(exception)}") from exception
 
         return self.voice_client
 
     async def disconnect(self) -> None:
-        """Disconnect from voice channel and cleanup."""
+        """Disconnect from voice channel and reset playback."""
 
-        if self._disconnect_timer and not self._disconnect_timer.done():
-            self._disconnect_timer.cancel()
+        self._cancel_disconnect_timer()
+        self._playback_id += 1
 
-        if self.voice_client:
-            await self.voice_client.disconnect()
-            self.voice_client = None
-            self.player = None
+        voice_client = self.voice_client
+        self.voice_client = None
+        self.player = None
 
+        if voice_client:
+            await voice_client.disconnect(force=True)
+
+        self.queue.clear()
+        self.queue.loop = False
+        self.queue.loop_queue = False
         self.current_track = None
-        self._is_playing = False
+        self._skip_requested = False
         self._skip_votes.clear()
 
-    async def play_next(self) -> None:
-        """Play the next track in queue."""
+    def stop(self) -> None:
+        """Stop playback and clear the queue, staying connected."""
 
-        if self.queue.loop and self.current_track:
-            next_track = self.current_track
-        else:
+        self._playback_id += 1
+        self.queue.clear()
+        self.current_track = None
+        self._skip_votes.clear()
+
+        if self.player:
+            self.player.stop()
+
+        self._start_disconnect_timer()
+
+    def skip(self) -> None:
+        """Skip the current track, even when it is looping."""
+
+        self._skip_requested = True
+
+        if self.player and (self.player.is_playing() or self.player.is_paused()):
+            # The source's after callback plays the next track
+            self.player.stop()
+
+    async def ensure_playing(self) -> None:
+        """Start playing the queue if no track is current."""
+
+        async with self._play_lock:
+            if self.current_track is None:
+                await self._play_next()
+
+    async def _advance(self, playback_id: int) -> None:
+        """Play the next track once the source `playback_id` has finished."""
+
+        async with self._play_lock:
+            # The track was replaced or stopped meanwhile
+            if playback_id == self._playback_id:
+                await self._play_next()
+
+    async def _play_next(self) -> None:
+        finished = self.current_track
+        replay = False
+
+        if finished is not None:
+            if self.queue.loop and not self._skip_requested:
+                replay = True
+                self.queue.add_next(finished)
+            elif self.queue.loop_queue:
+                self.queue.add(finished)
+
+        self._skip_requested = False
+        self._skip_votes.clear()
+
+        for _ in range(len(self.queue)):
             next_track = self.queue.get_next()
+            if next_track is None or not self.player:
+                break
 
-        if next_track is None:
-            self._is_playing = False
-            await self._start_disconnect_timer()
-            return
+            self.current_track = next_track
+            self._cancel_disconnect_timer()
 
-        self.current_track = next_track
-        self._skip_votes.clear()
+            try:
+                if next_track.needs_resolving:
+                    await YTDLSource.resolve(next_track)
 
-        try:
-            # Play track with callback to play next when done
-            if self.player:
+                # Stopped or disconnected while resolving the stream
+                if self.current_track is not next_track or not self.player:
+                    return
+
+                self._playback_id += 1
+                playback_id = self._playback_id
+                loop = asyncio.get_running_loop()
+
                 await self.player.play(
-                    next_track, after=lambda error: self._after_track(error)
+                    next_track,
+                    after=lambda error: self._after_track(error, playback_id, loop),
                 )
-                self._is_playing = True
+            except Exception as exception:
+                self.current_track = None
+                if self.text_channel:
+                    await self.text_channel.send(
+                        f"❌ Error playing `{next_track.title}`: {str(exception)}"
+                    )
+                continue
 
-            if self.text_channel:
+            # Do not announce the same track every time it loops
+            if self.text_channel and not replay:
                 await self._send_now_playing()
 
-        except Exception as exception:
-            # If playback fails, try next track
-            if self.text_channel:
-                await self.text_channel.send(
-                    f"❌ Error playing `{next_track.title}`: {str(exception)}"
-                )
-            await self.play_next()
+            return
 
-    def _after_track(self, error: Exception | None) -> None:
-        """Callback after track finishes playing."""
+        self.current_track = None
+        self._start_disconnect_timer()
+
+    def _after_track(
+        self,
+        error: Exception | None,
+        playback_id: int,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Callback after track finishes playing (called from the audio thread)."""
 
         if error:
             print(f"Player error: {error}")
 
-        # Schedule next track in event loop
-        if self.voice_client:
-            asyncio.run_coroutine_threadsafe(self.play_next(), self.voice_client.loop)
+        asyncio.run_coroutine_threadsafe(self._advance(playback_id), loop)
 
     async def _send_now_playing(self) -> None:
         """Send now playing embed to text channel."""
@@ -145,7 +220,7 @@ class GuildState:
 
         embed = discord.Embed(
             title="🎵 Now Playing",
-            description=f"[{self.current_track.title}]({self.current_track.webpage_url})",
+            description=self.current_track.link,
             color=discord.Color.blue(),
         )
 
@@ -177,12 +252,16 @@ class GuildState:
 
         await self.text_channel.send(embed=embed)
 
-    async def _start_disconnect_timer(self) -> None:
-        """Start auto-disconnect timer."""
+    def _cancel_disconnect_timer(self) -> None:
+        """Cancel the auto-disconnect timer, if running."""
 
         if self._disconnect_timer and not self._disconnect_timer.done():
             self._disconnect_timer.cancel()
 
+    def _start_disconnect_timer(self) -> None:
+        """Start auto-disconnect timer."""
+
+        self._cancel_disconnect_timer()
         self._disconnect_timer = asyncio.create_task(self._auto_disconnect())
 
     async def _auto_disconnect(self) -> None:
@@ -190,7 +269,7 @@ class GuildState:
 
         await asyncio.sleep(self._timeout)
 
-        if not self.is_playing and self.is_connected:
+        if not self.is_active and self.is_connected:
             if self.text_channel:
                 await self.text_channel.send(
                     f"⏸️ Disconnecting due to {self._timeout // 60} minutes of inactivity."
@@ -216,7 +295,7 @@ class GuildState:
             listeners = [
                 member for member in self.voice_client.channel.members if not member.bot
             ]
-            required = len(listeners) // 2
+            required = max(1, (len(listeners) + 1) // 2)
         else:
             required = 1
 

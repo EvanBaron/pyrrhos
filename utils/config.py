@@ -34,8 +34,6 @@ FFMPEG_OPTIONS = {
 # yt-dlp Configuration
 YTDL_FORMAT_OPTIONS = {
     "format": "bestaudio/best",
-    "extractaudio": True,
-    "audioformat": "mp3",
     "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
     "restrictfilenames": True,
     "noplaylist": True,
@@ -46,15 +44,12 @@ YTDL_FORMAT_OPTIONS = {
     "no_warnings": True,
     "default_search": "auto",
     "source_address": "0.0.0.0",
-    "force-ipv4": True,
     "prefer_ffmpeg": True,
     "keepvideo": False,
     "extract_flat": False,
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "age_limit": None,
     "http_chunk_size": 10485760,
     "extractor_args": {"youtubepot-bgutilhttp": {"base_url": POT_PROVIDER_URL}},
-    "js-runtimes": "node",
 }
 
 if Path(COOKIES_PATH).exists():

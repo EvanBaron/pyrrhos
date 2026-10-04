@@ -5,6 +5,8 @@ from discord.ext import commands
 from utils.state import StateManager
 from utils.audio import YTDLSource
 from utils.validators import Validators
+from utils.spotify import SpotifyResolver
+from data.track import Track
 from data.exceptions import DownloadError, VoiceError, QueueError
 from data.constants import (
     COLOR_PRIMARY,
@@ -42,6 +44,24 @@ class Music(commands.Cog, name="music"):
         """Cleanup when cog is unloaded."""
 
         await self.state_manager.cleanup_all()
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
+        """Reset the guild state when the bot is disconnected from voice by someone else."""
+
+        if not self.bot.user or member.id != self.bot.user.id:
+            return
+
+        if before.channel and after.channel is None:
+            state = self.state_manager.get_state(member.guild)
+
+            if state.voice_client is not None:
+                await state.disconnect()
 
     def _check_voice_state(self, interaction: discord.Interaction) -> str | None:
         """
@@ -120,45 +140,67 @@ class Music(commands.Cog, name="music"):
                 )
                 return
 
-            if not Validators.is_url(query):
-                query = f"ytsearch:{Validators.sanitize_search_query(query)}"
+            playlist_name: str | None = None
 
-            track = await YTDLSource.from_url(query, interaction.user)
+            if Validators.is_spotify_url(query):
+                collection = await SpotifyResolver.resolve(query)
+                tracks = [
+                    spotify_track.to_track(interaction.user)
+                    for spotify_track in collection.tracks
+                ]
+                if collection.kind != "track":
+                    playlist_name = collection.name
+            else:
+                if not Validators.is_url(query):
+                    query = f"ytsearch1:{Validators.sanitize_search_query(query)}"
 
-            if not Validators.validate_duration(track.duration):
+                tracks, playlist_name = await YTDLSource.search(query, interaction.user)
+
+            playable = [
+                track
+                for track in tracks
+                if Validators.validate_duration(track.duration)
+            ]
+            room = MAX_QUEUE_SIZE - len(state.queue)
+            added = playable[:room]
+
+            if not added:
                 await interaction.followup.send(
                     f"❌ Track is too long! Maximum duration is {MAX_TRACK_DURATION // 60} minutes.",
                     ephemeral=True,
                 )
-
                 return
 
-            position = state.queue.add(track)
+            was_active = state.is_active
+            for track in added:
+                state.queue.add(track)
 
-            embed = discord.Embed(
-                title=f"{EMOJI_MUSIC} Added to Queue",
-                description=f"[{track.title}]({track.webpage_url})",
-                color=COLOR_SUCCESS,
-            )
+            if playlist_name is None:
+                embed = self._added_track_embed(
+                    added[0], len(state.queue) if was_active else None
+                )
+            else:
+                embed = discord.Embed(
+                    title=f"{EMOJI_QUEUE} Added Playlist",
+                    description=f"**{playlist_name}** — {len(added)} track(s)",
+                    color=COLOR_SUCCESS,
+                )
 
-            if track.thumbnail:
-                embed.set_thumbnail(url=track.thumbnail)
-
-            embed.add_field(
-                name="Duration", value=track.duration_formatted, inline=True
-            )
-
-            embed.add_field(
-                name="Position in Queue", value=f"#{position + 1}", inline=True
-            )
-
-            if track.uploader:
-                embed.add_field(name="Uploader", value=track.uploader, inline=True)
+                skipped: list[str] = []
+                if len(playable) < len(tracks):
+                    skipped.append(
+                        f"{len(tracks) - len(playable)} longer than {MAX_TRACK_DURATION // 60} minutes"
+                    )
+                if len(added) < len(playable):
+                    skipped.append(
+                        f"{len(playable) - len(added)} over the {MAX_QUEUE_SIZE} tracks queue limit"
+                    )
+                if skipped:
+                    embed.set_footer(text="Skipped: " + ", ".join(skipped))
 
             await interaction.followup.send(embed=embed)
 
-            if not state.is_playing:
-                await state.play_next()
+            await state.ensure_playing()
 
         except DownloadError as error:
             await interaction.followup.send(
@@ -172,6 +214,29 @@ class Music(commands.Cog, name="music"):
             await interaction.followup.send(
                 f"❌ An unexpected error occurred: {str(exception)}", ephemeral=True
             )
+
+    @staticmethod
+    def _added_track_embed(track: Track, position: int | None) -> discord.Embed:
+        """Embed confirming a single track was queued (`position` None if it plays now)."""
+
+        embed = discord.Embed(
+            title=f"{EMOJI_MUSIC} Added to Queue",
+            description=track.link,
+            color=COLOR_SUCCESS,
+        )
+
+        if track.thumbnail:
+            embed.set_thumbnail(url=track.thumbnail)
+
+        embed.add_field(name="Duration", value=track.duration_formatted, inline=True)
+
+        if position is not None:
+            embed.add_field(name="Position in Queue", value=f"#{position}", inline=True)
+
+        if track.uploader:
+            embed.add_field(name="Uploader", value=track.uploader, inline=True)
+
+        return embed
 
     @app_commands.command(name="pause", description="Pause the current song")
     async def pause(self, interaction: discord.Interaction) -> None:
@@ -191,12 +256,12 @@ class Music(commands.Cog, name="music"):
 
         state = self.state_manager.get_state(interaction.guild)
 
-        if not state.is_playing:
-            await interaction.response.send_message(MSG_NOTHING_PLAYING, ephemeral=True)
-            return
-
         if state.is_paused:
             await interaction.response.send_message(MSG_ALREADY_PAUSED, ephemeral=True)
+            return
+
+        if not state.is_playing:
+            await interaction.response.send_message(MSG_NOTHING_PLAYING, ephemeral=True)
             return
 
         if state.player:
@@ -247,14 +312,14 @@ class Music(commands.Cog, name="music"):
 
         state = self.state_manager.get_state(interaction.guild)
 
-        if not state.is_playing:
+        if not state.current_track:
             await interaction.response.send_message(MSG_NOTHING_PLAYING, ephemeral=True)
             return
 
         current_votes, required_votes = state.add_skip_vote(interaction.user.id)
 
-        if current_votes >= required_votes and state.player and state.current_track:
-            state.player.stop()
+        if current_votes >= required_votes:
+            state.skip()
             await interaction.response.send_message(
                 f"{EMOJI_SKIP} Skipped **{state.current_track.title}**"
             )
@@ -287,9 +352,7 @@ class Music(commands.Cog, name="music"):
             )
             return
 
-        state.queue.clear()
-        if state.player:
-            state.player.stop()
+        state.stop()
         await interaction.response.send_message(
             f"{EMOJI_STOP} Stopped playback and cleared the queue."
         )
@@ -327,7 +390,7 @@ class Music(commands.Cog, name="music"):
             embed.add_field(
                 name="🎵 Now Playing",
                 value=(
-                    f"[{current.title}]({current.webpage_url})\n"
+                    f"{current.link}\n"
                     f"`{current.duration_formatted}` | Requested by {requester_name}"
                 ),
                 inline=False,
@@ -341,7 +404,7 @@ class Music(commands.Cog, name="music"):
             for i in range(start_idx, end_idx):
                 track = state.queue[i]
                 requester_name = track.requester.name if track.requester else "Unknown"
-                queue_text += f"`{i + 1}.` [{track.title}]({track.webpage_url})\n"
+                queue_text += f"`{i + 1}.` {track.link}\n"
                 queue_text += f"     `{track.duration_formatted}` | {requester_name}\n"
 
             embed.add_field(
@@ -399,7 +462,7 @@ class Music(commands.Cog, name="music"):
 
         embed = discord.Embed(
             title="🎵 Now Playing",
-            description=f"[{track.title}]({track.webpage_url})",
+            description=track.link,
             color=COLOR_PRIMARY,
         )
 
@@ -447,8 +510,10 @@ class Music(commands.Cog, name="music"):
 
         state = self.state_manager.get_state(interaction.guild)
 
-        if not state.is_playing:
-            await interaction.response.send_message(MSG_NOTHING_PLAYING, ephemeral=True)
+        if not state.player:
+            await interaction.response.send_message(
+                MSG_BOT_NOT_IN_VOICE, ephemeral=True
+            )
             return
 
         if not Validators.validate_volume(volume):

@@ -1,99 +1,146 @@
 import asyncio
+import time
 from typing import Any, Callable, cast
 import discord
 import yt_dlp
 from data.track import Track
 from data.exceptions import AudioError, DownloadError
 from utils.config import YTDL_FORMAT_OPTIONS, YTDL_HEADERS, FFMPEG_OPTIONS
+from data.constants import MAX_PLAYLIST_SIZE
 import logging
-
 
 logger = logging.getLogger(__name__)
 
 
 class YTDLSource:
-    """Handles YouTube-DL operations for downloading and extracting audio info."""
+    """Handles YouTube-DL operations for extracting track info and streams."""
 
     ytdl_options: dict[str, Any] = YTDL_FORMAT_OPTIONS.copy()
     ytdl_options["http_headers"] = YTDL_HEADERS
     ytdl: yt_dlp.YoutubeDL = yt_dlp.YoutubeDL(cast(Any, ytdl_options))
-
-    @classmethod
-    async def extract_info(cls, url: str, download: bool = False) -> dict[str, Any]:
-        """
-        Extract information from a URL asynchronously.
-
-        Args:
-            url: The URL or search query
-            download: Whether to download the audio
-
-        Returns:
-            Dictionary containing track information
-
-        Raises:
-            DownloadError: If extraction fails
-        """
-        loop = asyncio.get_event_loop()
-
-        logger.info(
-            f"yt-dlp extractor_args: {cls.ytdl.params.get('extractor_args', {})}"
+    flat_ytdl: yt_dlp.YoutubeDL = yt_dlp.YoutubeDL(
+        cast(
+            Any,
+            {
+                **ytdl_options,
+                "extract_flat": "in_playlist",
+                "playlistend": MAX_PLAYLIST_SIZE,
+            },
         )
+    )
+
+    @staticmethod
+    async def _extract(ytdl: yt_dlp.YoutubeDL, query: str) -> dict[str, Any]:
+        """Run a yt-dlp extraction in an executor to avoid blocking the event loop."""
+
+        loop = asyncio.get_running_loop()
 
         try:
-            # Run in executor to avoid blocking
             data = await loop.run_in_executor(
-                None, lambda: cls.ytdl.extract_info(url, download=download)
+                None, lambda: ytdl.extract_info(query, download=False)
             )
-
-            if not data:
-                raise DownloadError(f"Could not extract info from {url}")
-
-            # Handle playlists
-            if "entries" in data:
-                if len(data["entries"]) == 0:
-                    raise DownloadError("Playlist is empty")
-                data = data["entries"][0]
-
-            return dict(data)
-
         except Exception as exception:
-            raise DownloadError(
-                f"Unexpected error during extraction: {str(exception)}"
-            ) from exception
+            raise DownloadError(f"Extraction failed: {str(exception)}") from exception
 
-    @classmethod
-    async def from_url(cls, url: str, requester: discord.Member) -> Track:
-        """
-        Create a Track object from a URL or search query.
+        if not data:
+            raise DownloadError(f"Could not extract info from {query}")
 
-        Args:
-            url: YouTube URL or search query
-            requester: Discord member who requested the track
+        return dict(data)
 
-        Returns:
-            Track object ready to play
+    @staticmethod
+    def _track_from_info(
+        data: dict[str, Any], requester: discord.Member | None
+    ) -> Track:
+        """Build a Track from a (possibly flat) yt-dlp info dict."""
 
-        Raises:
-            DownloadError: If track creation fails
-        """
+        thumbnail = data.get("thumbnail")
+        if not thumbnail and data.get("thumbnails"):
+            thumbnail = data["thumbnails"][-1].get("url")
 
-        data = await cls.extract_info(url, download=False)
-
-        # Extract the streaming URL
-        if "url" not in data:
-            raise DownloadError("Could not find streaming URL")
-
-        track = Track(
-            title=data.get("title", "Unknown Title"),
-            url=data["url"],
-            webpage_url=data.get("webpage_url", url),
-            duration=int(data.get("duration", 0)),
-            thumbnail=data.get("thumbnail"),
-            uploader=data.get("uploader", "Unknown"),
+        return Track(
+            title=data.get("title") or "Unknown Title",
+            source=data.get("webpage_url") or data.get("url") or "",
+            duration=int(data.get("duration") or 0),
+            thumbnail=thumbnail,
+            uploader=data.get("uploader") or data.get("channel"),
             requester=requester,
         )
 
-        return track
+    @classmethod
+    async def search(
+        cls, query: str, requester: discord.Member
+    ) -> tuple[list[Track], str | None]:
+        """
+        Find the tracks matching a URL or search query.
+
+        Playlists are listed without resolving their streams, which happens
+        when each track is about to play.
+
+        Args:
+            query: URL or yt-dlp search query
+            requester: Discord member who requested the tracks
+
+        Returns:
+            The tracks found, and the playlist title if the query was a playlist
+
+        Raises:
+            DownloadError: If nothing could be extracted
+        """
+
+        data = await cls._extract(cls.flat_ytdl, query)
+
+        if data.get("_type") != "playlist":
+            track = cls._track_from_info(data, requester)
+
+            if data.get("formats") and data.get("url"):
+                track.stream_url = data["url"]
+                track.resolved_at = time.monotonic()
+
+            return [track], None
+
+        tracks = [
+            cls._track_from_info(entry, requester)
+            for entry in data.get("entries") or []
+            if entry
+            and entry.get("title") not in (None, "[Deleted video]", "[Private video]")
+        ]
+
+        if not tracks:
+            raise DownloadError("No playable tracks found")
+
+        is_search = query.startswith(("ytsearch", "scsearch"))
+
+        return tracks, None if is_search else data.get("title")
+
+    @classmethod
+    async def resolve(cls, track: Track) -> None:
+        """
+        Resolve the stream URL of a track, refreshing its metadata.
+
+        Raises:
+            DownloadError: If the stream cannot be found
+        """
+
+        data = await cls._extract(cls.ytdl, track.source)
+
+        if "entries" in data:
+            entries = [entry for entry in data["entries"] if entry]
+            if not entries:
+                raise DownloadError(f"No results for {track.title}")
+            data = entries[0]
+
+        if "url" not in data:
+            raise DownloadError("Could not find streaming URL")
+
+        resolved = cls._track_from_info(data, track.requester)
+
+        track.title = resolved.title
+        track.source = resolved.source or track.source
+        track.duration = resolved.duration or track.duration
+        track.thumbnail = resolved.thumbnail or track.thumbnail
+        track.uploader = resolved.uploader or track.uploader
+        track.stream_url = data["url"]
+        track.resolved_at = time.monotonic()
 
     @classmethod
     def get_audio_source(
@@ -110,8 +157,11 @@ class YTDLSource:
             Discord audio source ready to play
         """
 
+        if not track.stream_url:
+            raise AudioError(f"Track {track.title} has no stream URL")
+
         source = discord.FFmpegPCMAudio(
-            track.url,
+            track.stream_url,
             before_options=FFMPEG_OPTIONS.get("before_options"),
             options=FFMPEG_OPTIONS.get("options"),
         )
@@ -167,7 +217,8 @@ class AudioPlayer:
             after: Callback function to call when track finishes
         """
 
-        if self.voice_client.is_playing():
+        # A paused source also has to be stopped before playing another one
+        if self.voice_client.is_playing() or self.voice_client.is_paused():
             self.voice_client.stop()
 
         self.current_track = track

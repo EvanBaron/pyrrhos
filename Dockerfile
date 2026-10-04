@@ -12,10 +12,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 ARG CACHEBUST=1
-RUN pip install --no-cache-dir -U "yt-dlp[default]"
+RUN pip install --no-cache-dir -U "yt-dlp[default]" deno
 
 COPY . .
 
 ENV ENVIRONMENT=prod
+ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "main.py"]
