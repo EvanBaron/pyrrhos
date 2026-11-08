@@ -1,8 +1,16 @@
+import os
 import sys
 import asyncio
+import logging
 import signal
+import discord
 from client import MusicBot, create_bot
 from utils.config import TOKEN, ENVIRONMENT, COMMAND_PREFIX, test_guild_id
+
+discord.utils.setup_logging(level=logging.INFO, root=True)
+if os.getenv("VOICE_DEBUG"):
+    logging.getLogger("discord.voice_state").setLevel(logging.DEBUG)
+    logging.getLogger("discord.player").setLevel(logging.DEBUG)
 
 
 def setup_environment():
