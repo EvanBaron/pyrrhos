@@ -125,7 +125,11 @@ class GuildState:
 
         self._skip_requested = True
 
-        if self.player and (self.player.is_playing() or self.player.is_paused()):
+        if self.player and (
+            self.player.is_playing()
+            or self.player.is_paused()
+            or self.player.is_starting()
+        ):
             # The source's after callback plays the next track
             self.player.stop()
 
@@ -178,7 +182,7 @@ class GuildState:
                 playback_id = self._playback_id
                 loop = asyncio.get_running_loop()
 
-                await self.player.play(
+                started = await self.player.play(
                     next_track,
                     after=lambda error: self._after_track(error, playback_id, loop),
                 )
@@ -191,7 +195,7 @@ class GuildState:
                 continue
 
             # Do not announce the same track every time it loops
-            if self.text_channel and not replay:
+            if self.text_channel and started and not replay:
                 await self._send_now_playing()
 
             return

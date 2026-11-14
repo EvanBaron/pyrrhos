@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import json
 import os
 import subprocess
@@ -26,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 # Fresh extractions to try when downloading a stream fails before any audio
 DOWNLOAD_RETRIES = 2
+
+# 20ms of 16-bit 48kHz stereo PCM, the frame size discord.py sends
+FRAME_SIZE = 3840
+SILENCE_FRAME = b"\x00" * FRAME_SIZE
+# Audio decoded ahead of playback, to ride out download stalls (in 20ms frames)
+BUFFER_FRAMES = 15 * 50
+# Audio buffered before playback starts
+PREBUFFER_FRAMES = 2 * 50
+# Longest wait for the prebuffer before playing anyway
+PREBUFFER_TIMEOUT = 15
 
 
 class YTDLDownloadStream:
@@ -163,6 +174,88 @@ class YTDLPipeAudio(discord.FFmpegPCMAudio):
             download.stop()
 
         super().cleanup()
+
+
+class BufferedAudio(discord.AudioSource):
+    """
+    PCM audio decoded ahead of playback by a background thread.
+
+    discord.py sends a frame every 20ms on a fixed clock, and when a read
+    blocks it sends the frames it fell behind on all at once to catch up,
+    which sounds like the audio speeding up. Reading from a buffer never
+    blocks: an empty buffer plays silence until the download catches up.
+    """
+
+    def __init__(self, original: discord.AudioSource):
+        self.original: discord.AudioSource = original
+        self._frames: collections.deque[bytes] = collections.deque()
+        self._condition: threading.Condition = threading.Condition()
+        self._ready: threading.Event = threading.Event()
+        self._finished: bool = False
+        self._stopped: bool = False
+        self._underruns: int = 0
+
+        self._thread: threading.Thread = threading.Thread(
+            target=self._fill, name="audio-buffer", daemon=True
+        )
+        self._thread.start()
+
+    def _fill(self) -> None:
+        try:
+            while True:
+                with self._condition:
+                    while len(self._frames) >= BUFFER_FRAMES and not self._stopped:
+                        self._condition.wait()
+                    if self._stopped:
+                        return
+
+                data = self.original.read()
+                if len(data) != FRAME_SIZE:
+                    return
+
+                with self._condition:
+                    self._frames.append(data)
+                    if len(self._frames) >= PREBUFFER_FRAMES:
+                        self._ready.set()
+        except Exception:
+            logger.exception("Reading audio failed")
+        finally:
+            with self._condition:
+                self._finished = True
+            self._ready.set()
+
+    def wait_ready(self, timeout: float = PREBUFFER_TIMEOUT) -> bool:
+        """Block until the prebuffer is filled or the audio ended."""
+
+        return self._ready.wait(timeout)
+
+    def read(self) -> bytes:
+        with self._condition:
+            if self._frames:
+                data = self._frames.popleft()
+                self._condition.notify()
+                return data
+
+            if self._finished:
+                if self._underruns:
+                    logger.info("Buffer ran empty %s time(s)", self._underruns)
+                return b""
+
+        # Silence keeps discord.py's clock steady instead of a catch-up burst
+        self._underruns += 1
+        return SILENCE_FRAME
+
+    def is_opus(self) -> bool:
+        return False
+
+    def cleanup(self) -> None:
+        with self._condition:
+            self._stopped = True
+            self._condition.notify_all()
+
+        # Ends the stream, so a read blocked in the fill thread returns
+        self.original.cleanup()
+        self._thread.join(timeout=5)
 
 
 class YTDLSource:
@@ -304,7 +397,7 @@ class YTDLSource:
     @classmethod
     def get_audio_source(
         cls, track: Track, volume: float = 0.5
-    ) -> discord.PCMVolumeTransformer[YTDLPipeAudio]:
+    ) -> discord.PCMVolumeTransformer[BufferedAudio]:
         """
         Create an audio source from a Track object.
 
@@ -319,7 +412,7 @@ class YTDLSource:
         if not track.stream_info:
             raise AudioError(f"Track {track.title} has no stream info")
 
-        source = YTDLPipeAudio(track.stream_info)
+        source = BufferedAudio(YTDLPipeAudio(track.stream_info))
 
         return discord.PCMVolumeTransformer(source, volume=volume)
 
@@ -331,6 +424,8 @@ class AudioPlayer:
         self.voice_client: discord.VoiceClient = voice_client
         self._volume: float = 0.5
         self.current_track: Track | None = None
+        # Source buffering before it plays, cleaned up if stopped meanwhile
+        self._starting: discord.PCMVolumeTransformer[BufferedAudio] | None = None
 
     @property
     def volume(self) -> int:
@@ -356,6 +451,11 @@ class AudioPlayer:
 
         return self.voice_client.is_playing()
 
+    def is_starting(self) -> bool:
+        """Check if a track is buffering before it plays."""
+
+        return self._starting is not None
+
     def is_paused(self) -> bool:
         """Check if audio is paused."""
 
@@ -363,13 +463,17 @@ class AudioPlayer:
 
     async def play(
         self, track: Track, after: Callable[[Exception | None], Any] | None = None
-    ) -> None:
+    ) -> bool:
         """
-        Play a track.
+        Play a track, once enough of it is buffered.
 
         Args:
             track: Track to play
-            after: Callback function to call when track finishes
+            after: Callback function to call when track finishes, or with
+                None if the track is stopped while buffering
+
+        Returns:
+            Whether the track started, rather than being stopped while buffering
         """
 
         # A paused source also has to be stopped before playing another one
@@ -380,9 +484,33 @@ class AudioPlayer:
 
         try:
             source = YTDLSource.get_audio_source(track, volume=self._volume)
-            self.voice_client.play(source, after=after)
         except Exception as exception:
             raise AudioError(f"Failed to play track: {str(exception)}") from exception
+
+        self._starting = source
+        loop = asyncio.get_running_loop()
+
+        try:
+            if not await loop.run_in_executor(None, source.original.wait_ready):
+                logger.warning("Buffering %s timed out, playing anyway", track.title)
+        finally:
+            started = self._starting is source
+            self._starting = None
+
+        if not started:
+            await loop.run_in_executor(None, source.cleanup)
+            if after is not None:
+                after(None)
+            return False
+
+        try:
+            source.volume = self._volume
+            self.voice_client.play(source, after=after)
+        except Exception as exception:
+            source.cleanup()
+            raise AudioError(f"Failed to play track: {str(exception)}") from exception
+
+        return True
 
     def pause(self) -> None:
         """Pause current playback."""
@@ -397,7 +525,9 @@ class AudioPlayer:
             self.voice_client.resume()
 
     def stop(self) -> None:
-        """Stop current playback."""
+        """Stop current playback, or the track buffering to play."""
 
+        # play() cleans up the source when its buffering ends
+        self._starting = None
         self.voice_client.stop()
         self.current_track = None
