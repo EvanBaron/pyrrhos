@@ -26,9 +26,10 @@ POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://pot-provider:4416")
 COOKIES_PATH = os.getenv("COOKIES_PATH", "./cookies.txt")
 
 # FFmpeg Configuration
+# Input is piped from yt-dlp, which handles reconnecting to the stream itself
 FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn -b:a 128k",
+    "before_options": "",
+    "options": "-vn",
 }
 
 # yt-dlp Configuration

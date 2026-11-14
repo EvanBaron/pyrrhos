@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import time
+from typing import Any
 import discord
 
 # YouTube stream URLs expire after ~6 hours, re-resolve them well before that
@@ -13,7 +14,7 @@ class Track:
 
     `source` is what yt-dlp resolves when the track is about to play: a video
     URL, or a search query for tracks found by metadata.
-    The stream URL is resolved lazily, so queued tracks never hold expired URLs.
+    The stream info is resolved lazily, so queued tracks never hold expired URLs.
     """
 
     title: str
@@ -22,15 +23,16 @@ class Track:
     thumbnail: str | None = None
     uploader: str | None = None
     requester: discord.Member | None = None
-    stream_url: str | None = None
+    # yt-dlp info of the resolved stream, used to download it when playing
+    stream_info: dict[str, Any] | None = None
     resolved_at: float = 0.0
 
     @property
     def needs_resolving(self) -> bool:
-        """Whether the stream URL is missing or may have expired."""
+        """Whether the stream info is missing or its URLs may have expired."""
 
         return (
-            self.stream_url is None
+            self.stream_info is None
             or time.monotonic() - self.resolved_at > STREAM_URL_TTL
         )
 
