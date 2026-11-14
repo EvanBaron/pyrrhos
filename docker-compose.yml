@@ -4,6 +4,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env.production
+    environment:
+      - COOKIES_PATH=/app/cookies/cookies.txt
+    volumes:
+      # Mounted rather than baked into the image so cookies can be replaced
+      # without a rebuild, and cookies refreshed by yt-dlp survive rebuilds
+      - ./cookies:/app/cookies
     depends_on:
       - pot-provider
       - warp

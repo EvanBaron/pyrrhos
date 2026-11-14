@@ -10,3 +10,5 @@ Dockerfile
 docker-compose.yml
 shell.nix
 README.md
+cookies.txt
+cookies/
